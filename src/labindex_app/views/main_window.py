@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self._fs = None
         self._crawler = None
         self._search = None
+        self._extractor = None
 
         self._setup_ui()
         self._setup_status_bar()
@@ -79,6 +80,14 @@ class MainWindow(QMainWindow):
             from labindex_core.services.search import SearchService
             self._search = SearchService(self.db)
         return self._search
+
+    @property
+    def extractor(self):
+        """Lazy load extractor service."""
+        if self._extractor is None:
+            from labindex_core.services.extractor import ExtractorService
+            self._extractor = ExtractorService(self.fs, self.db)
+        return self._extractor
 
     def _setup_ui(self):
         """Setup the main UI layout."""
@@ -164,6 +173,11 @@ class MainWindow(QMainWindow):
         self.stop_crawl_btn.clicked.connect(self._on_stop_crawl)
         crawl_buttons.addWidget(self.stop_crawl_btn)
 
+        self.extract_btn = QPushButton("Extract Content")
+        self.extract_btn.setToolTip("Extract text from documents for full-text search")
+        self.extract_btn.clicked.connect(self._on_start_extraction)
+        crawl_buttons.addWidget(self.extract_btn)
+
         crawl_buttons.addStretch()
         crawl_layout.addLayout(crawl_buttons)
 
@@ -180,6 +194,11 @@ class MainWindow(QMainWindow):
         self.stats_roots = QLabel("Roots: 0")
         self.stats_roots.setFont(QFont("Segoe UI", 12))
         stats_layout.addWidget(self.stats_roots)
+
+        self.stats_indexed = QLabel("Indexed: 0")
+        self.stats_indexed.setFont(QFont("Segoe UI", 12))
+        self.stats_indexed.setStyleSheet("color: #4fc3f7;")
+        stats_layout.addWidget(self.stats_indexed)
 
         stats_layout.addStretch()
 
@@ -399,6 +418,39 @@ class MainWindow(QMainWindow):
         if success and hasattr(self, 'graph_canvas'):
             self._populate_graph()
 
+    def _on_start_extraction(self):
+        """Start content extraction for selected root."""
+        roots = self.crawler.get_roots()
+        if not roots:
+            QMessageBox.warning(self, "No Roots", "Please add and crawl a folder first.")
+            return
+
+        # Use first root (TODO: let user select)
+        root = roots[0]
+
+        # Create and start extraction thread
+        self._extract_thread = ExtractThread(self.extractor, root.root_id)
+        self._extract_thread.progress.connect(self._on_extract_progress)
+        self._extract_thread.finished.connect(self._on_extract_finished)
+        self._extract_thread.start()
+
+        # Update UI
+        self.extract_btn.setEnabled(False)
+        self.crawl_status.setText("Extracting content...")
+
+    def _on_extract_progress(self, processed: int, total: int, current: str):
+        """Handle extraction progress update."""
+        self.crawl_status.setText(f"Extracting: {current}")
+        if total > 0:
+            self.crawl_progress.setValue(int(processed * 100 / total))
+
+    def _on_extract_finished(self, success: bool, message: str):
+        """Handle extraction completion."""
+        self.extract_btn.setEnabled(True)
+        self.crawl_status.setText(message)
+        self.crawl_progress.setValue(100 if success else 0)
+        self._refresh_stats()
+
     def _on_search(self):
         """Perform search."""
         query = self.search_input.text().strip()
@@ -450,6 +502,7 @@ class MainWindow(QMainWindow):
         stats = self.search.get_stats()
         self.stats_files.setText(f"Files: {stats['file_count']:,}")
         self.stats_roots.setText(f"Roots: {stats['roots']}")
+        self.stats_indexed.setText(f"Indexed: {stats['indexed_count']:,}")
 
     # === Graph Methods ===
 
@@ -541,3 +594,29 @@ class CrawlThread(QThread):
             )
         except Exception as e:
             self.finished.emit(False, f"Crawl failed: {e}")
+
+
+class ExtractThread(QThread):
+    """Background thread for content extraction."""
+
+    progress = pyqtSignal(int, int, str)  # processed, total, current_file
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, extractor, root_id: int):
+        super().__init__()
+        self.extractor = extractor
+        self.root_id = root_id
+
+    def run(self):
+        try:
+            def on_progress(p):
+                self.progress.emit(p.files_processed, p.files_total, p.current_file)
+
+            result = self.extractor.extract_root(self.root_id, progress_callback=on_progress)
+            self.finished.emit(
+                True,
+                f"Extraction complete: {result.success_count:,} indexed, "
+                f"{result.skipped_count:,} skipped, {result.error_count:,} errors"
+            )
+        except Exception as e:
+            self.finished.emit(False, f"Extraction failed: {e}")

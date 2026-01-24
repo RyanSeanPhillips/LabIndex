@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS content (
     keywords_json TEXT DEFAULT '[]',
     entities_json TEXT DEFAULT '{}',
     content_excerpt TEXT,
+    full_text TEXT,
     extraction_version TEXT DEFAULT '1.0',
     extracted_at TEXT NOT NULL
 );
@@ -118,6 +119,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_docs USING fts5(
     keywords,
     entities,
     excerpt,
+    full_text,
     content='',
     tokenize='porter unicode61'
 );
@@ -148,6 +150,44 @@ class SqliteDB(DBPort):
     def _init_schema(self):
         """Initialize database schema."""
         self._conn.executescript(SCHEMA_SQL)
+        self._run_migrations()
+
+    def _run_migrations(self):
+        """Run any necessary schema migrations."""
+        # Check if full_text column exists in content table
+        cursor = self._conn.execute("PRAGMA table_info(content)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if 'full_text' not in columns:
+            try:
+                self._conn.execute("ALTER TABLE content ADD COLUMN full_text TEXT")
+            except Exception:
+                pass  # Column might already exist
+
+        # Rebuild FTS table if needed (to add full_text column)
+        # Note: This is destructive - only do on first migration
+        cursor = self._conn.execute("PRAGMA table_info(fts_docs)")
+        fts_columns = {row[1] for row in cursor.fetchall()}
+        if 'full_text' not in fts_columns:
+            try:
+                self._conn.execute("DROP TABLE IF EXISTS fts_docs")
+                self._conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS fts_docs USING fts5(
+                        file_id UNINDEXED,
+                        path,
+                        name,
+                        title,
+                        summary,
+                        keywords,
+                        entities,
+                        excerpt,
+                        full_text,
+                        content='',
+                        tokenize='porter unicode61'
+                    )
+                """)
+            except Exception:
+                pass
 
     @contextmanager
     def _transaction(self):
@@ -314,20 +354,21 @@ class SqliteDB(DBPort):
         self._conn.execute(
             """INSERT INTO content
                (file_id, title, summary, keywords_json, entities_json,
-                content_excerpt, extraction_version, extracted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                content_excerpt, full_text, extraction_version, extracted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(file_id) DO UPDATE SET
                  title=excluded.title,
                  summary=excluded.summary,
                  keywords_json=excluded.keywords_json,
                  entities_json=excluded.entities_json,
                  content_excerpt=excluded.content_excerpt,
+                 full_text=excluded.full_text,
                  extraction_version=excluded.extraction_version,
                  extracted_at=excluded.extracted_at""",
             (
                 content.file_id, content.title, content.summary,
                 json.dumps(content.keywords), json.dumps(content.entities),
-                content.content_excerpt, content.extraction_version,
+                content.content_excerpt, content.full_text, content.extraction_version,
                 content.extracted_at.isoformat(),
             )
         )
@@ -349,14 +390,15 @@ class SqliteDB(DBPort):
         # Insert new entry
         self._conn.execute(
             """INSERT INTO fts_docs
-               (file_id, path, name, title, summary, keywords, entities, excerpt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (file_id, path, name, title, summary, keywords, entities, excerpt, full_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 content.file_id, file.path, file.name,
                 content.title or "", content.summary or "",
                 " ".join(content.keywords),
                 " ".join(f"{k}: {', '.join(v)}" for k, v in content.entities.items()),
                 content.content_excerpt or "",
+                content.full_text or "",
             )
         )
 
@@ -372,6 +414,7 @@ class SqliteDB(DBPort):
                 keywords=json.loads(row["keywords_json"]),
                 entities=json.loads(row["entities_json"]),
                 content_excerpt=row["content_excerpt"],
+                full_text=row["full_text"] if "full_text" in row.keys() else None,
                 extraction_version=row["extraction_version"],
                 extracted_at=datetime.fromisoformat(row["extracted_at"]),
             )
@@ -566,4 +609,15 @@ class SqliteDB(DBPort):
             ).fetchone()
         else:
             row = self._conn.execute("SELECT COUNT(*) as count FROM files").fetchone()
+        return row["count"]
+
+    def get_indexed_count(self, root_id: Optional[int] = None) -> int:
+        """Get count of files with extracted content."""
+        if root_id:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as count FROM content c JOIN files f ON c.file_id = f.file_id WHERE f.root_id = ?",
+                (root_id,)
+            ).fetchone()
+        else:
+            row = self._conn.execute("SELECT COUNT(*) as count FROM content").fetchone()
         return row["count"]

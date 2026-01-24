@@ -181,5 +181,6 @@ class SearchService:
         """Get index statistics."""
         return {
             "file_count": self.db.get_file_count(root_id),
+            "indexed_count": self.db.get_indexed_count(root_id),
             "roots": len(self.db.list_roots()),
         }

@@ -64,6 +64,7 @@ class ContentRecord:
     keywords: List[str] = field(default_factory=list)
     entities: Dict[str, List[str]] = field(default_factory=dict)  # {type: [values]}
     content_excerpt: Optional[str] = None  # First N chars/lines
+    full_text: Optional[str] = None  # Complete extracted text (for FTS)
     extraction_version: str = "1.0"
     extracted_at: datetime = field(default_factory=datetime.now)
 
