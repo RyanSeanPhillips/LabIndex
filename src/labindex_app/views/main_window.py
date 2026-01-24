@@ -227,16 +227,18 @@ class MainWindow(QMainWindow):
         # Vertical splitter for graph and results
         left_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Graph placeholder
+        # Graph visualization
         graph_frame = QFrame()
         graph_frame.setFrameStyle(QFrame.Shape.StyledPanel)
         graph_frame.setMinimumHeight(300)
         graph_layout = QVBoxLayout(graph_frame)
-        graph_label = QLabel("Graph Visualization")
-        graph_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        graph_label.setStyleSheet("color: #888; font-size: 14px;")
-        graph_layout.addWidget(graph_label)
-        # TODO: Add GraphCanvas here
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Import and create GraphCanvas
+        from labindex_app.views.graph_canvas import GraphCanvas
+        self.graph_canvas = GraphCanvas()
+        self.graph_canvas.node_clicked.connect(self._on_graph_node_clicked)
+        graph_layout.addWidget(self.graph_canvas)
 
         left_splitter.addWidget(graph_frame)
 
@@ -393,6 +395,10 @@ class MainWindow(QMainWindow):
         self.crawl_status.setText(message)
         self._refresh_stats()
 
+        # Populate graph with new data
+        if success and hasattr(self, 'graph_canvas'):
+            self._populate_graph()
+
     def _on_search(self):
         """Perform search."""
         query = self.search_input.text().strip()
@@ -401,6 +407,10 @@ class MainWindow(QMainWindow):
 
         results = self.search.search(query, limit=100)
         self._populate_results(results)
+
+        # Highlight results in graph
+        if hasattr(self, 'graph_canvas'):
+            self._highlight_search_results(results)
 
     def _populate_results(self, results):
         """Populate results table."""
@@ -440,6 +450,60 @@ class MainWindow(QMainWindow):
         stats = self.search.get_stats()
         self.stats_files.setText(f"Files: {stats['file_count']:,}")
         self.stats_roots.setText(f"Roots: {stats['roots']}")
+
+    # === Graph Methods ===
+
+    def _on_graph_node_clicked(self, path: str):
+        """Handle click on a graph node."""
+        self.statusBar().showMessage(f"Selected: {path}", 3000)
+        # TODO: Show details panel for the clicked node
+
+    def _populate_graph(self, root_id: Optional[int] = None):
+        """Populate the graph with file index data."""
+        # Get all files for the root
+        roots = self.crawler.get_roots()
+        if not roots:
+            return
+
+        # Use first root if none specified
+        if root_id is None:
+            root_id = roots[0].root_id
+
+        root = self.db.get_root(root_id)
+        if not root:
+            return
+
+        # Get files and convert to the format GraphCanvas expects
+        files = self.search.list_files(root_id, limit=5000)
+
+        # Build file index dict for GraphCanvas
+        file_index = {
+            'root': root.root_path,
+            'total_files': len(files),
+            'files': []
+        }
+
+        for f in files:
+            file_info = {
+                'name': f.name,
+                'path': f.path,
+                'full_path': str(Path(root.root_path) / f.path),
+                'parent': f.parent_path,
+                'is_dir': f.is_dir,
+                'category': f.category.value,
+                'size': f.size_bytes,
+            }
+            file_index['files'].append(file_info)
+
+        # Update the graph canvas
+        self.graph_canvas.build_graph(file_index, preserve_full_index=True)
+        self.graph_canvas.update()
+
+    def _highlight_search_results(self, results):
+        """Highlight search results in the graph."""
+        paths = {r.path for r in results}
+        self.graph_canvas.set_highlighted_paths(paths)
+        self.graph_canvas.update()
 
     def closeEvent(self, event):
         """Handle window close."""
