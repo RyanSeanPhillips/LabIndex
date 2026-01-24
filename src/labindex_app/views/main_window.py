@@ -460,44 +460,50 @@ class MainWindow(QMainWindow):
 
     def _populate_graph(self, root_id: Optional[int] = None):
         """Populate the graph with file index data."""
-        # Get all files for the root
-        roots = self.crawler.get_roots()
-        if not roots:
-            return
+        try:
+            # Get all files for the root
+            roots = self.crawler.get_roots()
+            if not roots:
+                return
 
-        # Use first root if none specified
-        if root_id is None:
-            root_id = roots[0].root_id
+            # Use first root if none specified
+            if root_id is None:
+                root_id = roots[0].root_id
 
-        root = self.db.get_root(root_id)
-        if not root:
-            return
+            root = self.db.get_root(root_id)
+            if not root:
+                return
 
-        # Get files and convert to the format GraphCanvas expects
-        files = self.search.list_files(root_id, limit=5000)
+            # Get files and convert to the format GraphCanvas expects
+            files = self.search.list_files(root_id, limit=5000)
 
-        # Build file index dict for GraphCanvas
-        file_index = {
-            'root': root.root_path,
-            'total_files': len(files),
-            'files': []
-        }
-
-        for f in files:
-            file_info = {
-                'name': f.name,
-                'path': f.path,
-                'full_path': str(Path(root.root_path) / f.path),
-                'parent': f.parent_path,
-                'is_dir': f.is_dir,
-                'category': f.category.value,
-                'size': f.size_bytes,
+            # Build file index dict for GraphCanvas
+            file_index = {
+                'root': root.root_path,
+                'total_files': len(files),
+                'files': []
             }
-            file_index['files'].append(file_info)
 
-        # Update the graph canvas
-        self.graph_canvas.build_graph(file_index, preserve_full_index=True)
-        self.graph_canvas.update()
+            for f in files:
+                file_info = {
+                    'name': f.name,
+                    'path': f.path,
+                    'full_path': str(Path(root.root_path) / f.path),
+                    'parent': f.parent_path,
+                    'is_dir': f.is_dir,
+                    'category': f.category.value,
+                    'size_kb': f.size_bytes // 1024,  # GraphCanvas expects size_kb
+                }
+                file_index['files'].append(file_info)
+
+            # Update the graph canvas
+            self.graph_canvas.build_graph(file_index, preserve_full_index=False)
+            self.graph_canvas.update()
+
+        except Exception as e:
+            print(f"[ERROR] Failed to populate graph: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _highlight_search_results(self, results):
         """Highlight search results in the graph."""

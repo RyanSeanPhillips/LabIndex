@@ -134,6 +134,7 @@ class GraphCanvas(QWidget):
             'spreadsheets': QColor(46, 204, 113), # Green
             'images': QColor(243, 156, 18),   # Orange
             'code': QColor(155, 89, 182),     # Purple
+            'slides': QColor(230, 126, 34),   # Dark orange
             'video': QColor(241, 196, 15),    # Yellow
             'archives': QColor(149, 165, 166), # Gray
             'other': QColor(127, 140, 141),   # Dark gray
