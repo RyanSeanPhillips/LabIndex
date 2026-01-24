@@ -3,6 +3,7 @@ REM LabIndex Launcher
 REM Activates the plethapp conda environment and runs the application
 
 echo Starting LabIndex...
+echo.
 
 REM Activate conda environment
 call conda activate plethapp
@@ -13,5 +14,7 @@ cd /d "%~dp0"
 REM Run the application
 python run.py
 
-REM Keep window open if there's an error
-if errorlevel 1 pause
+REM Always pause so we can see any error messages
+echo.
+echo Application exited.
+pause

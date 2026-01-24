@@ -7,11 +7,43 @@ Usage:
 """
 
 import sys
+import traceback
 from pathlib import Path
+from datetime import datetime
+
+
+def setup_exception_hook():
+    """Setup global exception hook to catch Qt exceptions."""
+    log_file = Path(__file__).parent.parent.parent.parent / "crash_log.txt"
+
+    def exception_hook(exctype, value, tb):
+        # Write to log file
+        error_msg = ''.join(traceback.format_exception(exctype, value, tb))
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"UNHANDLED EXCEPTION at {datetime.now()}\n")
+            f.write(f"{'='*60}\n")
+            f.write(error_msg)
+            f.write("\n")
+
+        # Print to console
+        print("\n" + "="*60)
+        print("UNHANDLED EXCEPTION!")
+        print("="*60)
+        print(error_msg)
+        print(f"\nError log saved to: {log_file}")
+
+        # Call default handler
+        sys.__excepthook__(exctype, value, tb)
+
+    sys.excepthook = exception_hook
 
 
 def main():
     """Launch the LabIndex application."""
+    # Setup exception hook first
+    setup_exception_hook()
+
     # Ensure src is in path for development
     src_path = Path(__file__).parent.parent
     if str(src_path) not in sys.path:
