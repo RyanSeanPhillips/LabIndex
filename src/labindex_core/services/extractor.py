@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable, List
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from ..domain.models import FileRecord, ContentRecord
 from ..domain.enums import IndexStatus, FileCategory
@@ -55,6 +56,9 @@ class ExtractorService:
     # Maximum file size for extraction (50MB)
     MAX_EXTRACT_SIZE = 50 * 1024 * 1024
 
+    # Maximum time to spend on a single file (seconds)
+    MAX_EXTRACT_TIME = 30
+
     def __init__(self, fs: FSPort, db: DBPort):
         """
         Initialize the extractor service.
@@ -93,8 +97,22 @@ class ExtractorService:
             )
             return None
 
-        # Do the extraction
-        result = self.registry.extract(full_path)
+        # Do the extraction with timeout
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.registry.extract, full_path)
+                result = future.result(timeout=self.MAX_EXTRACT_TIME)
+        except FuturesTimeoutError:
+            self.db.update_file_status(
+                file.file_id, IndexStatus.SKIPPED,
+                f"Extraction timed out after {self.MAX_EXTRACT_TIME}s"
+            )
+            return None
+        except Exception as e:
+            self.db.update_file_status(
+                file.file_id, IndexStatus.ERROR, f"Extraction error: {e}"
+            )
+            return None
 
         if not result.success:
             self.db.update_file_status(
