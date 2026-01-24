@@ -270,7 +270,7 @@ class GraphCanvas(QWidget):
         return 'file'  # Default generic file icon
 
     def _draw_file_icon(self, painter, x: float, y: float, icon_type: str,
-                        color: QColor, size: int = 10, highlighted: bool = False):
+                        color: QColor, size: float = 10, highlighted: bool = False):
         """Draw a file type icon at the given position.
 
         Args:
@@ -285,7 +285,9 @@ class GraphCanvas(QWidget):
         from PyQt6.QtGui import QPen, QBrush, QPolygonF
         from PyQt6.QtCore import QPointF
 
-        half = size / 2
+        # Convert to int for Qt drawing functions
+        size = int(size)
+        half = size // 2
         x, y = int(x), int(y)
 
         # Draw highlight ring if highlighted
@@ -301,38 +303,34 @@ class GraphCanvas(QWidget):
 
         if icon_type == 'folder':
             # Folder shape: rectangle with tab on top-left
-            tab_w = size * 0.4
-            tab_h = size * 0.2
-            painter.drawRect(int(x - half), int(y - half + tab_h), size, int(size - tab_h))
-            painter.drawRect(int(x - half), int(y - half), int(tab_w), int(tab_h))
+            tab_w = int(size * 0.4)
+            tab_h = int(size * 0.2)
+            painter.drawRect(x - half, y - half + tab_h, size, size - tab_h)
+            painter.drawRect(x - half, y - half, tab_w, tab_h)
 
         elif icon_type == 'spreadsheet':
             # Grid/table icon: rectangle with grid lines
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             # Draw grid lines
             painter.setPen(QPen(color.darker(150)))
             third = size // 3
-            painter.drawLine(int(x - half + third), int(y - half),
-                           int(x - half + third), int(y + half))
-            painter.drawLine(int(x - half + 2*third), int(y - half),
-                           int(x - half + 2*third), int(y + half))
-            painter.drawLine(int(x - half), int(y - half + third),
-                           int(x + half), int(y - half + third))
-            painter.drawLine(int(x - half), int(y - half + 2*third),
-                           int(x + half), int(y - half + 2*third))
+            painter.drawLine(x - half + third, y - half, x - half + third, y + half)
+            painter.drawLine(x - half + 2*third, y - half, x - half + 2*third, y + half)
+            painter.drawLine(x - half, y - half + third, x + half, y - half + third)
+            painter.drawLine(x - half, y - half + 2*third, x + half, y - half + 2*third)
 
         elif icon_type == 'word':
             # Document with lines
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             # Draw text lines
             painter.setPen(QPen(color.darker(150)))
             for i in range(3):
                 ly = int(y - half + size * 0.25 + i * size * 0.22)
-                painter.drawLine(int(x - half + 2), ly, int(x + half - 2), ly)
+                painter.drawLine(x - half + 2, ly, x + half - 2, ly)
 
         elif icon_type == 'pdf':
             # Document with corner fold
-            corner = size * 0.25
+            corner = int(size * 0.25)
             points = [
                 QPointF(x - half, y - half),
                 QPointF(x + half - corner, y - half),
@@ -343,74 +341,68 @@ class GraphCanvas(QWidget):
             painter.drawPolygon(QPolygonF(points))
             # Draw corner fold line
             painter.setPen(QPen(color.darker(150)))
-            painter.drawLine(int(x + half - corner), int(y - half),
-                           int(x + half), int(y - half + corner))
+            painter.drawLine(x + half - corner, y - half, x + half, y - half + corner)
 
         elif icon_type == 'text':
             # Simple document rectangle
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             # Single line
             painter.setPen(QPen(color.darker(150)))
-            painter.drawLine(int(x - half + 2), int(y), int(x + half - 2), int(y))
+            painter.drawLine(x - half + 2, y, x + half - 2, y)
 
         elif icon_type == 'code':
             # Brackets < >
             painter.setPen(QPen(color, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             # Left bracket <
-            painter.drawLine(int(x - half + 2), int(y),
-                           int(x - half/2), int(y - half + 2))
-            painter.drawLine(int(x - half + 2), int(y),
-                           int(x - half/2), int(y + half - 2))
+            painter.drawLine(x - half + 2, y, x - half // 2, y - half + 2)
+            painter.drawLine(x - half + 2, y, x - half // 2, y + half - 2)
             # Right bracket >
-            painter.drawLine(int(x + half - 2), int(y),
-                           int(x + half/2), int(y - half + 2))
-            painter.drawLine(int(x + half - 2), int(y),
-                           int(x + half/2), int(y + half - 2))
+            painter.drawLine(x + half - 2, y, x + half // 2, y - half + 2)
+            painter.drawLine(x + half - 2, y, x + half // 2, y + half - 2)
 
         elif icon_type == 'image':
             # Frame with mountain/sun
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             painter.setPen(QPen(color.darker(150)))
             # Simple mountain triangle
-            painter.drawLine(int(x - half + 2), int(y + half - 2),
-                           int(x), int(y - 1))
-            painter.drawLine(int(x), int(y - 1),
-                           int(x + half - 2), int(y + half - 2))
+            painter.drawLine(x - half + 2, y + half - 2, x, y - 1)
+            painter.drawLine(x, y - 1, x + half - 2, y + half - 2)
 
         elif icon_type == 'data':
             # Cylinder/database shape
-            painter.drawEllipse(int(x - half), int(y - half), size, int(size * 0.4))
-            painter.drawRect(int(x - half), int(y - half + size * 0.2),
-                           size, int(size * 0.6))
-            painter.drawEllipse(int(x - half), int(y + half - size * 0.4),
-                              size, int(size * 0.4))
+            ellipse_h = int(size * 0.4)
+            rect_h = int(size * 0.6)
+            painter.drawEllipse(x - half, y - half, size, ellipse_h)
+            painter.drawRect(x - half, y - half + int(size * 0.2), size, rect_h)
+            painter.drawEllipse(x - half, y + half - ellipse_h, size, ellipse_h)
 
         elif icon_type == 'video':
             # Play button triangle in rectangle
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             painter.setBrush(QBrush(color.darker(150)))
+            qh = half // 2  # quarter size
             points = [
-                QPointF(x - half/2, y - half/2),
-                QPointF(x - half/2, y + half/2),
-                QPointF(x + half/2, y),
+                QPointF(x - qh, y - qh),
+                QPointF(x - qh, y + qh),
+                QPointF(x + qh, y),
             ]
             painter.drawPolygon(QPolygonF(points))
 
         elif icon_type == 'archive':
             # Box with zipper
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
             painter.setPen(QPen(color.darker(150)))
             # Zipper line down center
-            painter.drawLine(int(x), int(y - half), int(x), int(y + half))
+            painter.drawLine(x, y - half, x, y + half)
             # Zipper teeth
             for i in range(3):
                 ty = int(y - half + size * 0.25 + i * size * 0.25)
-                painter.drawLine(int(x - 2), ty, int(x + 2), ty)
+                painter.drawLine(x - 2, ty, x + 2, ty)
 
         else:  # 'file' - generic file
             # Simple rectangle
-            painter.drawRect(int(x - half), int(y - half), size, size)
+            painter.drawRect(x - half, y - half, size, size)
 
     def build_graph(self, file_index: Dict, preserve_full_index: bool = False):
         """Build graph structure from file index.
@@ -513,13 +505,9 @@ class GraphCanvas(QWidget):
                 self.folder_files[current].append(file_info)
 
         self.actual_max_depth = max_depth_found
-        print(f"[DEBUG] GraphCanvas.build_graph: {len(self.folder_sizes)} folders, calling _calculate_layout")
         self._calculate_layout()
-        print("[DEBUG] GraphCanvas.build_graph: _calculate_layout done")
         self._update_detail_scale()
-        print("[DEBUG] GraphCanvas.build_graph: _update_detail_scale done, calling update")
         self.update()
-        print("[DEBUG] GraphCanvas.build_graph: update done")
 
     def _update_detail_scale(self):
         """Calculate detail scale based on number of visible elements.
@@ -1139,8 +1127,6 @@ class GraphCanvas(QWidget):
     def paintEvent(self, event):
         """Paint the graph."""
         from PyQt6.QtGui import QPainter, QPen, QBrush, QFont
-
-        print(f"[DEBUG] GraphCanvas.paintEvent: folder_sizes={len(self.folder_sizes)}, node_positions={len(self.node_positions)}")
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
