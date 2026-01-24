@@ -116,7 +116,7 @@ class ExtractorService:
         self.db.upsert_content(content)
 
         # Update file status
-        self.db.update_file_status(file.file_id, IndexStatus.INDEXED)
+        self.db.update_file_status(file.file_id, IndexStatus.EXTRACT_OK)
 
         return content
 
@@ -200,7 +200,7 @@ class ExtractorService:
                 continue
 
             # Skip already indexed files
-            if file.status == IndexStatus.INDEXED:
+            if file.status == IndexStatus.EXTRACT_OK:
                 continue
 
             # Skip files in non-extractable categories
@@ -221,7 +221,7 @@ class ExtractorService:
         files = self.db.list_files(root_id, limit=100000)
 
         total = len(files)
-        indexed = sum(1 for f in files if f.status == IndexStatus.INDEXED)
+        indexed = sum(1 for f in files if f.status == IndexStatus.EXTRACT_OK)
         pending = sum(1 for f in files if f.status == IndexStatus.PENDING)
         errors = sum(1 for f in files if f.status == IndexStatus.ERROR)
         skipped = sum(1 for f in files if f.status == IndexStatus.SKIPPED)
