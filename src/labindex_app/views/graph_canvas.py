@@ -1739,15 +1739,12 @@ class GraphCanvas(QWidget):
     def _filter_files_for_folder(self, folder_path: str) -> Dict:
         """Filter the full file index to only include files under a specific folder."""
         if not self.full_file_index:
-            debug_print(f"[DrillDown] No full_file_index available")
             return {'files': [], 'root': folder_path}
 
         # Normalize folder path (use forward slashes consistently)
         folder_path_normalized = folder_path.replace('\\', '/')
         if folder_path_normalized.endswith('/'):
             folder_path_normalized = folder_path_normalized[:-1]
-
-        debug_print(f"[DrillDown] Looking for files under: '{folder_path_normalized}'")
 
         filtered_files = []
         total_files = len(self.full_file_index.get('files', []))
@@ -1768,8 +1765,6 @@ class GraphCanvas(QWidget):
                 filtered_file = f.copy()
                 filtered_file['path'] = f.get('name', '')
                 filtered_files.append(filtered_file)
-
-        debug_print(f"[DrillDown] Filtering for '{folder_path}': found {len(filtered_files)} of {total_files} files")
 
         return {
             'files': filtered_files,
