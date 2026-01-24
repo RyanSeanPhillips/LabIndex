@@ -460,9 +460,11 @@ class MainWindow(QMainWindow):
 
     def _populate_graph(self, root_id: Optional[int] = None):
         """Populate the graph with file index data."""
+        print("[DEBUG] _populate_graph called")
         try:
             # Get all files for the root
             roots = self.crawler.get_roots()
+            print(f"[DEBUG] Got {len(roots) if roots else 0} roots")
             if not roots:
                 return
 
@@ -497,8 +499,11 @@ class MainWindow(QMainWindow):
                 file_index['files'].append(file_info)
 
             # Update the graph canvas
+            print(f"[DEBUG] Calling build_graph with {len(file_index['files'])} files")
             self.graph_canvas.build_graph(file_index, preserve_full_index=False)
+            print("[DEBUG] build_graph completed, calling update")
             self.graph_canvas.update()
+            print("[DEBUG] update completed")
 
         except Exception as e:
             print(f"[ERROR] Failed to populate graph: {e}")

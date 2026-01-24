@@ -37,6 +37,7 @@ class GraphCanvas(QWidget):
         self.folder_files = {}      # folder_path -> [file_info_dicts]
         self.folder_sizes = {}
         self.folder_counts = {}
+        self.folder_categories = {}  # folder_path -> {category: count}
         self.file_positions = {}    # file_path -> (x, y)
         self.root_name = "Root"
         self.layout_type = "Tree"
@@ -512,9 +513,13 @@ class GraphCanvas(QWidget):
                 self.folder_files[current].append(file_info)
 
         self.actual_max_depth = max_depth_found
+        print(f"[DEBUG] GraphCanvas.build_graph: {len(self.folder_sizes)} folders, calling _calculate_layout")
         self._calculate_layout()
+        print("[DEBUG] GraphCanvas.build_graph: _calculate_layout done")
         self._update_detail_scale()
+        print("[DEBUG] GraphCanvas.build_graph: _update_detail_scale done, calling update")
         self.update()
+        print("[DEBUG] GraphCanvas.build_graph: update done")
 
     def _update_detail_scale(self):
         """Calculate detail scale based on number of visible elements.
@@ -1135,11 +1140,19 @@ class GraphCanvas(QWidget):
         """Paint the graph."""
         from PyQt6.QtGui import QPainter, QPen, QBrush, QFont
 
+        print(f"[DEBUG] GraphCanvas.paintEvent: folder_sizes={len(self.folder_sizes)}, node_positions={len(self.node_positions)}")
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Background (drawn without transform)
         painter.fillRect(self.rect(), self.bg_color)
+
+        # Early return if no data yet
+        if not self.folder_sizes:
+            painter.setPen(QPen(self.text_color))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No data - run a crawl first")
+            return
 
         # Apply zoom and pan transform
         painter.translate(self.pan_offset_x, self.pan_offset_y)
