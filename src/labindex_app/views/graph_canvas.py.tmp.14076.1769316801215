@@ -1614,7 +1614,6 @@ class GraphCanvas(QWidget):
         self.pan_offset_x = self.width() / 2 - center_x * self.zoom_scale
         self.pan_offset_y = self.height() / 2 - center_y * self.zoom_scale
 
-        self._update_detail_scale()
         self.update()
 
     def mouseMoveEvent(self, event):

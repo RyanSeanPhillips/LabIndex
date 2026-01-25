@@ -1,0 +1,30 @@
+
+============================================================
+CRASH at 2026-01-24 20:23:59.249514
+============================================================
+Traceback (most recent call last):
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\run.py", line 24, in main_with_error_handling
+    main()
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\src\labindex_app\__main__.py", line 72, in main
+    window = MainWindow()
+             ^^^^^^^^^^^^
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\src\labindex_app\views\main_window.py", line 44, in __init__
+    self._setup_ui()
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\src\labindex_app\views\main_window.py", line 118, in _setup_ui
+    self._setup_search_tab()
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\src\labindex_app\views\main_window.py", line 290, in _setup_search_tab
+    self.layout_combo = QComboBox()
+                        ^^^^^^^^^
+NameError: name 'QComboBox' is not defined
+
+
+============================================================
+CRASH at 2026-01-24 20:39:36.506289
+============================================================
+Traceback (most recent call last):
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\run.py", line 24, in main_with_error_handling
+    main()
+  File "C:\Users\rphil2\Dropbox\python scripts\breath_analysis\LabIndex\src\labindex_app\__main__.py", line 52, in main
+    from PyQt6.QtWidgets import QApplication
+ModuleNotFoundError: No module named 'PyQt6'
+

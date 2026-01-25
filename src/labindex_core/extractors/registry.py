@@ -27,14 +27,41 @@ class ExtractorRegistry:
         from .pdf_extractor import PDFExtractor
         from .pptx_extractor import PowerPointExtractor
 
-        # Register each extractor for its extensions
-        for extractor_class in [
+        # Document extractors (always available)
+        document_extractors = [
             PlainTextExtractor,
             ExcelExtractor,
             WordExtractor,
             PDFExtractor,
             PowerPointExtractor,
-        ]:
+        ]
+
+        # Data file extractors (may not have dependencies installed)
+        data_extractors = []
+
+        # ABF extractor (requires pyabf)
+        try:
+            from .abf_extractor import ABFExtractor
+            data_extractors.append(ABFExtractor)
+        except ImportError:
+            pass
+
+        # SMRX extractor (requires sonpy)
+        try:
+            from .smrx_extractor import SMRXExtractor
+            data_extractors.append(SMRXExtractor)
+        except ImportError:
+            pass
+
+        # NPZ extractor (requires numpy - usually available)
+        try:
+            from .npz_extractor import NPZExtractor
+            data_extractors.append(NPZExtractor)
+        except ImportError:
+            pass
+
+        # Register all extractors
+        for extractor_class in document_extractors + data_extractors:
             extractor = extractor_class()
             for ext in extractor.EXTENSIONS:
                 self._extractors[ext.lower()] = extractor

@@ -474,6 +474,30 @@ class SqliteDB(DBPort):
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
+    def count_edges(self, root_id: Optional[int] = None) -> int:
+        """Count total edges (optionally filtered by root)."""
+        if root_id is None:
+            sql = "SELECT COUNT(*) FROM edges"
+            row = self._conn.execute(sql).fetchone()
+        else:
+            # Count edges where source file belongs to the root
+            sql = """
+                SELECT COUNT(*) FROM edges e
+                JOIN files f ON e.src_file_id = f.file_id
+                WHERE f.root_id = ?
+            """
+            row = self._conn.execute(sql, [root_id]).fetchone()
+        return row[0] if row else 0
+
+    def delete_edge(self, edge_id: int) -> bool:
+        """Delete an edge by ID. Returns True if deleted."""
+        cursor = self._conn.execute(
+            "DELETE FROM edges WHERE edge_id = ?",
+            [edge_id]
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     # === Search ===
 
     def search_filename(self, query: str, root_id: Optional[int] = None,

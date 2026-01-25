@@ -51,6 +51,7 @@ class ExtractorService:
         FileCategory.SPREADSHEETS,
         FileCategory.SLIDES,
         FileCategory.CODE,
+        FileCategory.DATA,  # ABF, SMRX, NPZ metadata extraction
     }
 
     # Maximum file size for extraction (50MB)

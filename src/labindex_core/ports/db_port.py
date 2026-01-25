@@ -101,6 +101,16 @@ class DBPort(ABC):
         """Get edges pointing to a file."""
         pass
 
+    @abstractmethod
+    def count_edges(self, root_id: Optional[int] = None) -> int:
+        """Count total edges (optionally filtered by root)."""
+        pass
+
+    @abstractmethod
+    def delete_edge(self, edge_id: int) -> bool:
+        """Delete an edge by ID. Returns True if deleted."""
+        pass
+
     # === Search ===
 
     @abstractmethod
