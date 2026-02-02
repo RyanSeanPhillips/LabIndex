@@ -1128,6 +1128,17 @@ class ModernGraphCanvas(QGraphicsView):
 
         menu.addSeparator()
 
+        # Export submenu
+        export_menu = menu.addMenu("Export")
+        pdf_action = export_menu.addAction("Export as PDF...")
+        pdf_action.triggered.connect(self._export_as_pdf)
+        png_action = export_menu.addAction("Export as PNG...")
+        png_action.triggered.connect(self._export_as_png)
+        svg_action = export_menu.addAction("Export as SVG...")
+        svg_action.triggered.connect(self._export_as_svg)
+
+        menu.addSeparator()
+
         # Check if clicked on item
         item = self.itemAt(pos)
         if item:
@@ -1166,3 +1177,144 @@ class ModernGraphCanvas(QGraphicsView):
             root = self._full_file_index.get('root', '')
             full_path = str(Path(root) / path)
             QApplication.clipboard().setText(full_path)
+
+    # -------------------------------------------------------------------------
+    # Export Methods
+    # -------------------------------------------------------------------------
+
+    def _export_as_pdf(self):
+        """Export the graph as a PDF file."""
+        from PyQt6.QtWidgets import QFileDialog
+        from PyQt6.QtGui import QPainter, QPageSize, QPageLayout
+        from PyQt6.QtCore import QMarginsF, QSizeF
+        from PyQt6.QtPrintSupport import QPrinter
+
+        # Get filename from user
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Graph as PDF",
+            "graph_export.pdf",
+            "PDF Files (*.pdf)"
+        )
+        if not filename:
+            return
+
+        # Get scene bounds
+        scene_rect = self._scene.itemsBoundingRect()
+        if scene_rect.isEmpty():
+            return
+
+        # Add padding
+        padding = 50
+        scene_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
+
+        # Create printer for PDF output
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(filename)
+
+        # Set page size to match scene aspect ratio
+        width_inches = max(8.5, scene_rect.width() / 72)  # Minimum letter width
+        height_inches = max(11, scene_rect.height() / 72)  # Minimum letter height
+
+        # Maintain aspect ratio
+        scene_aspect = scene_rect.width() / scene_rect.height()
+        if scene_aspect > width_inches / height_inches:
+            height_inches = width_inches / scene_aspect
+        else:
+            width_inches = height_inches * scene_aspect
+
+        page_size = QPageSize(QSizeF(width_inches * 25.4, height_inches * 25.4), QPageSize.Unit.Millimeter)
+        printer.setPageSize(page_size)
+        printer.setPageMargins(QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter)
+
+        # Render scene to PDF
+        painter = QPainter()
+        if painter.begin(printer):
+            self._scene.render(painter, source=scene_rect)
+            painter.end()
+
+    def _export_as_png(self):
+        """Export the graph as a PNG image."""
+        from PyQt6.QtWidgets import QFileDialog
+        from PyQt6.QtGui import QPainter, QImage
+        from PyQt6.QtCore import Qt
+
+        # Get filename from user
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Graph as PNG",
+            "graph_export.png",
+            "PNG Files (*.png)"
+        )
+        if not filename:
+            return
+
+        # Get scene bounds
+        scene_rect = self._scene.itemsBoundingRect()
+        if scene_rect.isEmpty():
+            return
+
+        # Add padding
+        padding = 50
+        scene_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
+
+        # Create high-resolution image (2x scale for quality)
+        scale = 2.0
+        image = QImage(
+            int(scene_rect.width() * scale),
+            int(scene_rect.height() * scale),
+            QImage.Format.Format_ARGB32_Premultiplied
+        )
+        image.fill(Qt.GlobalColor.white)
+
+        # Render scene to image
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.scale(scale, scale)
+        self._scene.render(painter, source=scene_rect)
+        painter.end()
+
+        # Save image
+        image.save(filename, "PNG")
+
+    def _export_as_svg(self):
+        """Export the graph as an SVG file."""
+        from PyQt6.QtWidgets import QFileDialog
+        from PyQt6.QtSvg import QSvgGenerator
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtCore import QSize
+
+        # Get filename from user
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Graph as SVG",
+            "graph_export.svg",
+            "SVG Files (*.svg)"
+        )
+        if not filename:
+            return
+
+        # Get scene bounds
+        scene_rect = self._scene.itemsBoundingRect()
+        if scene_rect.isEmpty():
+            return
+
+        # Add padding
+        padding = 50
+        scene_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
+
+        # Create SVG generator
+        generator = QSvgGenerator()
+        generator.setFileName(filename)
+        generator.setSize(QSize(int(scene_rect.width()), int(scene_rect.height())))
+        generator.setViewBox(scene_rect)
+        generator.setTitle("LabIndex Graph Export")
+        generator.setDescription("File relationship graph exported from LabIndex")
+
+        # Render scene to SVG
+        painter = QPainter()
+        if painter.begin(generator):
+            self._scene.render(painter, source=scene_rect)
+            painter.end()
