@@ -14,8 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Set, Tuple
 
-from ..domain.models import FileRecord, ContentRecord, Edge
-from ..domain.enums import FileCategory, EdgeType, IndexStatus
+from ..domain.models import FileRecord, ContentRecord, Edge, CandidateEdge, LinkerStrategy
+from ..domain.enums import FileCategory, EdgeType, IndexStatus, CandidateStatus
 from ..ports.db_port import DBPort
 
 
@@ -612,3 +612,364 @@ class LinkerService:
             'total_edges': total_edges // 2,  # Each edge counted twice
             'by_type': edges_by_type,
         }
+
+    # === User-Initiated Candidate Workflow ===
+
+    def generate_candidates(
+        self,
+        root_id: int,
+        src_folder: str,
+        dst_folder: str,
+        strategy: Optional[LinkerStrategy] = None,
+        relation_type: EdgeType = EdgeType.NOTES_FOR
+    ) -> List[CandidateEdge]:
+        """
+        Generate candidate edges for a specific linking goal.
+
+        This is the new user-initiated workflow where linking is goal-driven
+        rather than automatic.
+
+        Args:
+            root_id: Root ID containing the files
+            src_folder: Source folder path (data files)
+            dst_folder: Destination folder path (notes/metadata)
+            strategy: Optional linking strategy (uses defaults if None)
+            relation_type: Type of relationship to create
+
+        Returns:
+            List of CandidateEdge objects stored in the database
+        """
+        from .feature_extractor import FeatureExtractor
+
+        # Get files from source and destination folders
+        all_files = self.db.list_files(root_id, limit=100000)
+
+        src_files = [f for f in all_files
+                     if f.path.startswith(src_folder) and not f.is_dir]
+        dst_files = [f for f in all_files
+                     if f.path.startswith(dst_folder) and not f.is_dir]
+
+        # Build indexes
+        files_by_id = {f.file_id: f for f in all_files}
+        files_by_name = {f.name.lower(): f for f in all_files if not f.is_dir}
+        abf_by_suffix = self._build_abf_suffix_index(all_files)
+        animal_id_to_files = self._build_animal_id_index(all_files)
+
+        # Initialize feature extractor
+        feature_extractor = FeatureExtractor(self.db)
+
+        candidates: List[CandidateEdge] = []
+        strategy_id = strategy.strategy_id if strategy else None
+
+        # Apply rules to generate candidates between src and dst folders
+        # Rule 1: Explicit file references
+        for dst_file in dst_files:
+            if dst_file.status != IndexStatus.EXTRACT_OK:
+                continue
+
+            content = self.db.get_content(dst_file.file_id)
+            if not content or not content.full_text:
+                continue
+
+            # Find explicit file mentions
+            matches = re.findall(self.DATA_FILE_PATTERN, content.full_text, re.IGNORECASE)
+            for match in set(matches):
+                match_lower = match.lower()
+                if match_lower in files_by_name:
+                    src_file = files_by_name[match_lower]
+                    if src_file.file_id != dst_file.file_id:
+                        # Only if source is in src_folder
+                        if src_file.path.startswith(src_folder):
+                            evidence = {
+                                "type": "explicit_mention",
+                                "matched_text": match,
+                                "evidence_text": content.full_text[:200],
+                            }
+                            features = feature_extractor.extract(
+                                src_file, dst_file, evidence, strategy
+                            )
+                            confidence = feature_extractor.compute_score(features, strategy)
+
+                            candidate = CandidateEdge(
+                                candidate_id=0,
+                                src_file_id=dst_file.file_id,
+                                dst_file_id=src_file.file_id,
+                                relation_type=relation_type,
+                                confidence=confidence,
+                                evidence=evidence,
+                                features=features.to_dict(),
+                                strategy_id=strategy_id,
+                            )
+                            self.db.add_candidate_edge(candidate)
+                            candidates.append(candidate)
+
+        # Rule 2: Short references (000, 001, etc.)
+        for dst_file in dst_files:
+            if dst_file.status != IndexStatus.EXTRACT_OK:
+                continue
+
+            content = self.db.get_content(dst_file.file_id)
+            if not content or not content.full_text:
+                continue
+
+            suffix_matches = re.findall(self.SHORT_REF_PATTERN, content.full_text)
+            suffix_counts: Dict[str, int] = {}
+            for suffix in suffix_matches:
+                suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
+
+            for suffix, count in suffix_counts.items():
+                if suffix not in abf_by_suffix:
+                    continue
+
+                for src_file in abf_by_suffix[suffix]:
+                    if not src_file.path.startswith(src_folder):
+                        continue
+
+                    path_sim = self._calculate_path_similarity(dst_file.path, src_file.path)
+                    evidence = {
+                        "type": "inferred_sequence",
+                        "matched_suffix": suffix,
+                        "mention_count": count,
+                        "path_similarity": path_sim,
+                    }
+                    features = feature_extractor.extract(
+                        src_file, dst_file, evidence, strategy
+                    )
+                    confidence = feature_extractor.compute_score(features, strategy)
+
+                    candidate = CandidateEdge(
+                        candidate_id=0,
+                        src_file_id=dst_file.file_id,
+                        dst_file_id=src_file.file_id,
+                        relation_type=relation_type,
+                        confidence=confidence,
+                        evidence=evidence,
+                        features=features.to_dict(),
+                        strategy_id=strategy_id,
+                    )
+                    self.db.add_candidate_edge(candidate)
+                    candidates.append(candidate)
+
+        # Rule 3: Animal ID matching
+        for animal_id, related_files in animal_id_to_files.items():
+            src_matching = [f for f in related_files if f.path.startswith(src_folder)]
+            dst_matching = [f for f in related_files if f.path.startswith(dst_folder)]
+
+            for src_file in src_matching:
+                for dst_file in dst_matching:
+                    evidence = {
+                        "type": "proximity_only",
+                        "shared_animal_id": animal_id,
+                    }
+                    features = feature_extractor.extract(
+                        src_file, dst_file, evidence, strategy
+                    )
+                    confidence = feature_extractor.compute_score(features, strategy)
+
+                    candidate = CandidateEdge(
+                        candidate_id=0,
+                        src_file_id=dst_file.file_id,
+                        dst_file_id=src_file.file_id,
+                        relation_type=relation_type,
+                        confidence=confidence,
+                        evidence=evidence,
+                        features=features.to_dict(),
+                        strategy_id=strategy_id,
+                    )
+                    self.db.add_candidate_edge(candidate)
+                    candidates.append(candidate)
+
+        return candidates
+
+    def promote_candidate(self, candidate_id: int, reviewed_by: str = "user") -> Optional[Edge]:
+        """
+        Accept a candidate and promote it to a confirmed edge.
+
+        Args:
+            candidate_id: ID of the candidate to promote
+            reviewed_by: Who reviewed this (user, auditor:model_name)
+
+        Returns:
+            The created Edge or None if candidate not found
+        """
+        return self.db.promote_candidate_to_edge(candidate_id, reviewed_by)
+
+    def reject_candidate(self, candidate_id: int, reviewed_by: str = "user") -> bool:
+        """
+        Reject a candidate edge.
+
+        Args:
+            candidate_id: ID of the candidate to reject
+            reviewed_by: Who reviewed this
+
+        Returns:
+            True if successfully rejected
+        """
+        return self.db.update_candidate_status(candidate_id, "rejected", reviewed_by)
+
+    def flag_for_audit(self, candidate_id: int) -> bool:
+        """
+        Flag a candidate for LLM auditor review.
+
+        Args:
+            candidate_id: ID of the candidate to flag
+
+        Returns:
+            True if successfully flagged
+        """
+        return self.db.update_candidate_status(
+            candidate_id, CandidateStatus.NEEDS_AUDIT.value, "user"
+        )
+
+    def get_candidates_for_review(
+        self,
+        status: str = "pending",
+        strategy_id: Optional[int] = None,
+        limit: int = 100
+    ) -> List[CandidateEdge]:
+        """
+        Get candidate edges for review.
+
+        Args:
+            status: Filter by status (pending, needs_audit)
+            strategy_id: Filter by strategy
+            limit: Maximum candidates to return
+
+        Returns:
+            List of candidates sorted by confidence (descending)
+        """
+        return self.db.list_candidate_edges(status=status, strategy_id=strategy_id, limit=limit)
+
+    def get_candidate_stats(self) -> Dict[str, int]:
+        """Get counts of candidates by status."""
+        return {
+            "pending": self.db.count_candidate_edges("pending"),
+            "accepted": self.db.count_candidate_edges("accepted"),
+            "rejected": self.db.count_candidate_edges("rejected"),
+            "needs_audit": self.db.count_candidate_edges("needs_audit"),
+            "total": self.db.count_candidate_edges(),
+        }
+
+    def get_candidates_with_files(
+        self,
+        status: Optional[str] = None,
+        strategy_id: Optional[int] = None,
+        limit: int = 200
+    ) -> List[Dict[str, any]]:
+        """
+        Get candidates with pre-joined file info to avoid N+1 queries.
+
+        Args:
+            status: Filter by status (None = all)
+            strategy_id: Filter by strategy (None = all)
+            limit: Maximum candidates to return
+
+        Returns:
+            List of dicts with:
+            - candidate_id, src_file_id, dst_file_id, confidence, status
+            - src_name, src_path: Source file info
+            - dst_name, dst_path: Destination file info
+            - evidence: Evidence dict
+            - features: Features dict
+            - strategy_name: Name of strategy (or "Default")
+        """
+        candidates = self.db.list_candidate_edges(
+            status=status,
+            strategy_id=strategy_id,
+            limit=limit
+        )
+
+        if not candidates:
+            return []
+
+        # Batch fetch all unique file IDs
+        file_ids = set()
+        strategy_ids = set()
+        for c in candidates:
+            file_ids.add(c.src_file_id)
+            file_ids.add(c.dst_file_id)
+            if c.strategy_id:
+                strategy_ids.add(c.strategy_id)
+
+        # Batch fetch files
+        files_map = {}
+        for fid in file_ids:
+            f = self.db.get_file(fid)
+            if f:
+                files_map[fid] = f
+
+        # Batch fetch strategies
+        strategies_map = {}
+        for sid in strategy_ids:
+            s = self.db.get_linker_strategy(sid)
+            if s:
+                strategies_map[sid] = s
+
+        # Build result rows
+        rows = []
+        for c in candidates:
+            src_file = files_map.get(c.src_file_id)
+            dst_file = files_map.get(c.dst_file_id)
+
+            rows.append({
+                "candidate_id": c.candidate_id,
+                "src_file_id": c.src_file_id,
+                "dst_file_id": c.dst_file_id,
+                "confidence": c.confidence,
+                "status": c.status.value if hasattr(c.status, 'value') else c.status,
+                "src_name": src_file.name if src_file else f"[{c.src_file_id}]",
+                "src_path": src_file.path if src_file else "",
+                "dst_name": dst_file.name if dst_file else f"[{c.dst_file_id}]",
+                "dst_path": dst_file.path if dst_file else "",
+                "evidence": c.evidence,
+                "features": c.features,
+                "strategy_id": c.strategy_id,
+                "strategy_name": strategies_map[c.strategy_id].name if c.strategy_id and c.strategy_id in strategies_map else "Default",
+            })
+
+        return rows
+
+    def bulk_promote_high_confidence(
+        self,
+        min_confidence: float = 0.9,
+        strategy_id: Optional[int] = None
+    ) -> int:
+        """
+        Automatically promote all high-confidence candidates.
+
+        Args:
+            min_confidence: Minimum confidence threshold
+            strategy_id: Filter by strategy
+
+        Returns:
+            Number of candidates promoted
+        """
+        candidates = self.db.list_candidate_edges(status="pending", strategy_id=strategy_id, limit=10000)
+        promoted = 0
+
+        for candidate in candidates:
+            if candidate.confidence >= min_confidence:
+                edge = self.promote_candidate(candidate.candidate_id, "auto:high_confidence")
+                if edge:
+                    promoted += 1
+
+        return promoted
+
+    def clear_candidates(self, strategy_id: Optional[int] = None) -> int:
+        """
+        Clear all pending candidates (optionally for a specific strategy).
+
+        Args:
+            strategy_id: If provided, only clear candidates from this strategy
+
+        Returns:
+            Number of candidates cleared
+        """
+        candidates = self.db.list_candidate_edges(status="pending", strategy_id=strategy_id, limit=100000)
+        cleared = 0
+
+        for candidate in candidates:
+            if self.db.delete_candidate_edge(candidate.candidate_id):
+                cleared += 1
+
+        return cleared

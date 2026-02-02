@@ -100,6 +100,117 @@ class SearchService:
         """List files with optional filters."""
         return self.db.list_files(root_id, parent_path, category, limit)
 
+    # === Batch Queries (N+1 Prevention) ===
+
+    def search_with_metadata(
+        self,
+        query: str,
+        root_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search with pre-joined metadata to avoid N+1 queries.
+
+        Returns rows with all data needed for display, eliminating
+        the need for separate queries for content and link counts.
+
+        Args:
+            query: Search query
+            root_id: Limit to specific root (None = all roots)
+            limit: Maximum results
+
+        Returns:
+            List of dicts with:
+            - file_id, name, path, category, size_bytes, score
+            - content_excerpt: First 60 chars of extracted content
+            - link_count: Number of edges to/from this file
+            - link_summaries: List of first 6 related file names
+        """
+        # Get base results
+        results = self.search(query, root_id, limit=limit)
+
+        if not results:
+            return []
+
+        # Batch fetch all file IDs
+        file_ids = [r.file_id for r in results]
+
+        # Batch fetch content (builds dict: file_id -> content)
+        contents_map = self._batch_get_contents(file_ids)
+
+        # Batch fetch edge counts and summaries
+        edges_map = self._batch_get_edge_info(file_ids)
+
+        # Build result rows
+        rows = []
+        for result in results:
+            content = contents_map.get(result.file_id)
+            edge_info = edges_map.get(result.file_id, {"count": 0, "summaries": []})
+
+            content_excerpt = ""
+            if content and content.content_excerpt:
+                content_excerpt = content.content_excerpt[:60].replace('\n', ' ')
+                if len(content.content_excerpt) > 60:
+                    content_excerpt += "..."
+
+            rows.append({
+                "file_id": result.file_id,
+                "name": result.name,
+                "path": result.path,
+                "category": result.file_record.category.value,
+                "size_bytes": result.file_record.size_bytes,
+                "score": result.score,
+                "content_excerpt": content_excerpt,
+                "full_excerpt": content.content_excerpt if content else None,
+                "link_count": edge_info["count"],
+                "link_summaries": edge_info["summaries"],
+            })
+
+        return rows
+
+    def _batch_get_contents(self, file_ids: List[int]) -> Dict[int, Any]:
+        """Batch fetch content records for multiple files."""
+        contents = {}
+        for fid in file_ids:
+            content = self.db.get_content(fid)
+            if content:
+                contents[fid] = content
+        return contents
+
+    def _batch_get_edge_info(self, file_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Batch fetch edge counts and summaries for multiple files."""
+        result = {}
+        for fid in file_ids:
+            edges_from = self.db.get_edges_from(fid)
+            edges_to = self.db.get_edges_to(fid)
+
+            # Build summaries for first 6 related files
+            summaries = []
+            for edge in edges_from[:3]:
+                other = self.db.get_file(edge.dst_file_id)
+                if other:
+                    summaries.append({
+                        "direction": "to",
+                        "name": other.name,
+                        "type": edge.relation_type.value,
+                        "confidence": edge.confidence,
+                    })
+            for edge in edges_to[:3]:
+                other = self.db.get_file(edge.src_file_id)
+                if other:
+                    summaries.append({
+                        "direction": "from",
+                        "name": other.name,
+                        "type": edge.relation_type.value,
+                        "confidence": edge.confidence,
+                    })
+
+            result[fid] = {
+                "count": len(edges_from) + len(edges_to),
+                "summaries": summaries,
+            }
+        return result
+
     # === Graph Navigation ===
 
     def get_related(

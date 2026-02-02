@@ -84,3 +84,28 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class CandidateStatus(str, Enum):
+    """Status of a candidate edge in the review workflow."""
+    PENDING = "pending"       # Awaiting review
+    ACCEPTED = "accepted"     # User/auditor accepted, promoted to edge
+    REJECTED = "rejected"     # User/auditor rejected
+    NEEDS_AUDIT = "needs_audit"  # Flagged for LLM auditor review
+
+
+class AuditVerdict(str, Enum):
+    """Verdict from LLM link auditor."""
+    ACCEPT = "accept"         # Link is valid
+    REJECT = "reject"         # Link is invalid
+    NEEDS_MORE_INFO = "needs_more_info"  # Inconclusive, needs context
+
+
+class ArtifactType(str, Enum):
+    """Types of sub-document artifacts for evidence anchoring."""
+    TEXT_SPAN = "text_span"       # Line range in text file
+    TABLE_CELL = "table_cell"     # Specific cell in spreadsheet
+    TABLE_ROW = "table_row"       # Entire row in spreadsheet
+    PPT_SLIDE = "ppt_slide"       # Slide in PowerPoint
+    IPYNB_CELL = "ipynb_cell"     # Cell in Jupyter notebook
+    PDF_PAGE = "pdf_page"         # Page in PDF document

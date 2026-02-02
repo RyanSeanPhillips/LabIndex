@@ -19,6 +19,18 @@ from ..ports.llm_port import (
 class OllamaLLM(LLMPort):
     """Ollama adapter for local LLM inference."""
 
+    # Preferred models in order (smaller/faster first for better responsiveness)
+    PREFERRED_MODELS = [
+        # Fast small models (2-4B params)
+        "gemma2:2b", "gemma:2b", "phi3:mini", "llama3.2:1b", "llama3.2:3b",
+        "qwen2.5:1.5b", "qwen2.5:3b",
+        # Medium models (7-9B params)
+        "gemma2:9b", "gemma:7b", "llama3.1:8b", "llama3:8b", "mistral:7b",
+        "qwen2.5:7b", "phi3:medium",
+        # Larger models (slower but more capable)
+        "gemma2:27b", "llama3.1:70b", "mixtral:8x7b", "qwen2.5:14b",
+    ]
+
     def __init__(
         self,
         model: str = None,  # Auto-detect if not specified
@@ -28,19 +40,46 @@ class OllamaLLM(LLMPort):
         Initialize Ollama adapter.
 
         Args:
-            model: Model name (e.g., "llama3.1", "mistral", "gemma3:4b").
-                   If None, uses first available model.
+            model: Model name (e.g., "llama3.1", "mistral", "gemma2:2b").
+                   If None, picks the fastest available model from PREFERRED_MODELS.
             base_url: Ollama server URL
         """
         self.base_url = base_url.rstrip("/")
         self._available = None  # Cached availability check
 
-        # Auto-detect model if not specified
+        # Auto-detect model if not specified - prefer faster models
         if model is None:
             models = self.list_models()
-            self.model = models[0] if models else "llama3.1"
+            self.model = self._pick_best_model(models)
         else:
             self.model = model
+
+    def _pick_best_model(self, available: List[str]) -> str:
+        """Pick the best model, preferring faster/smaller ones."""
+        if not available:
+            return "llama3.1"  # Fallback default
+
+        # Normalize model names (strip tags for comparison)
+        available_normalized = {}
+        for m in available:
+            # "gemma2:2b" -> base is "gemma2:2b", but "gemma2" should also match "gemma2:latest"
+            available_normalized[m.lower()] = m
+            base = m.split(':')[0].lower()
+            if base not in available_normalized:
+                available_normalized[base] = m
+
+        # Check preferred models in order
+        for preferred in self.PREFERRED_MODELS:
+            pref_lower = preferred.lower()
+            if pref_lower in available_normalized:
+                return available_normalized[pref_lower]
+            # Also check base name
+            pref_base = preferred.split(':')[0].lower()
+            if pref_base in available_normalized:
+                return available_normalized[pref_base]
+
+        # No preferred model found, return first available
+        return available[0]
 
     def get_provider(self) -> LLMProvider:
         return LLMProvider.OLLAMA

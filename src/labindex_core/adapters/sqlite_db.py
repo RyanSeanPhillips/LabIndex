@@ -13,9 +13,10 @@ from contextlib import contextmanager
 
 from ..ports.db_port import DBPort
 from ..domain.models import (
-    FileRecord, ContentRecord, Edge, IndexRoot, CrawlJob, SearchResult
+    FileRecord, ContentRecord, Edge, IndexRoot, CrawlJob, SearchResult,
+    CandidateEdge, Artifact, Audit, LinkerStrategy
 )
-from ..domain.enums import FileCategory, IndexStatus, EdgeType, JobStatus
+from ..domain.enums import FileCategory, IndexStatus, EdgeType, JobStatus, CandidateStatus
 
 
 # SQL Schema
@@ -123,6 +124,73 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_docs USING fts5(
     content='',
     tokenize='porter unicode61'
 );
+
+-- Candidate edges (proposed links awaiting review)
+CREATE TABLE IF NOT EXISTS candidate_edges (
+    candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    dst_file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    evidence_json TEXT DEFAULT '{}',
+    features_json TEXT DEFAULT '{}',
+    feature_schema_version INTEGER DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    linker_strategy_id INTEGER REFERENCES linker_strategies(strategy_id),
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    reviewed_by TEXT,
+    UNIQUE(src_file_id, dst_file_id, relation_type, linker_strategy_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_status ON candidate_edges(status);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_src ON candidate_edges(src_file_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_dst ON candidate_edges(dst_file_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_edges_strategy ON candidate_edges(linker_strategy_id);
+
+-- Artifacts (sub-document anchors for evidence navigation)
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    artifact_type TEXT NOT NULL,
+    locator_json TEXT NOT NULL,
+    excerpt TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_file ON artifacts(file_id);
+
+-- Audits (LLM auditor verdicts for candidate edges)
+CREATE TABLE IF NOT EXISTS audits (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id INTEGER NOT NULL REFERENCES candidate_edges(candidate_id) ON DELETE CASCADE,
+    auditor_model TEXT,
+    auditor_prompt_version TEXT,
+    verdict TEXT NOT NULL,
+    confidence REAL,
+    rationale_excerpt TEXT,
+    recommended_next_steps_json TEXT DEFAULT '[]',
+    audited_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audits_candidate ON audits(candidate_id);
+
+-- Linker strategies (versioned JSON strategy definitions)
+CREATE TABLE IF NOT EXISTS linker_strategies (
+    strategy_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    description TEXT,
+    strategy_json TEXT NOT NULL DEFAULT '{}',
+    src_folder_pattern TEXT,
+    dst_folder_pattern TEXT,
+    relation_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(name, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_linker_strategies_active ON linker_strategies(is_active);
 """
 
 
@@ -420,6 +488,32 @@ class SqliteDB(DBPort):
             )
         return None
 
+    def update_content_entities(self, file_id: int, entities: Dict[str, Any]) -> bool:
+        """Update just the entities JSON for a content record."""
+        cursor = self._conn.execute(
+            "UPDATE content SET entities_json = ? WHERE file_id = ?",
+            (json.dumps(entities), file_id)
+        )
+        if cursor.rowcount > 0:
+            # Update FTS index
+            content = self.get_content(file_id)
+            file = self.get_file(file_id)
+            if content and file:
+                self._update_fts(content, file)
+        return cursor.rowcount > 0
+
+    def create_content_with_label(self, file_id: int, label: str) -> bool:
+        """Create a minimal content record with just a label."""
+        entities = {"labels": [label]}
+        self._conn.execute(
+            """INSERT INTO content
+               (file_id, title, summary, keywords_json, entities_json,
+                content_excerpt, full_text, extraction_version, extracted_at)
+               VALUES (?, NULL, NULL, '[]', ?, NULL, NULL, 'label-only', ?)""",
+            (file_id, json.dumps(entities), self._now())
+        )
+        return True
+
     # === Edges ===
 
     def add_edge(self, edge: Edge) -> Edge:
@@ -645,3 +739,330 @@ class SqliteDB(DBPort):
         else:
             row = self._conn.execute("SELECT COUNT(*) as count FROM content").fetchone()
         return row["count"]
+
+    # === Candidate Edges ===
+
+    def add_candidate_edge(self, candidate: CandidateEdge) -> CandidateEdge:
+        """Add a candidate edge for review."""
+        cursor = self._conn.execute(
+            """INSERT INTO candidate_edges
+               (src_file_id, dst_file_id, relation_type, confidence, evidence_json,
+                features_json, feature_schema_version, status, linker_strategy_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(src_file_id, dst_file_id, relation_type, linker_strategy_id) DO UPDATE SET
+                 confidence=excluded.confidence,
+                 evidence_json=excluded.evidence_json,
+                 features_json=excluded.features_json,
+                 feature_schema_version=excluded.feature_schema_version""",
+            (
+                candidate.src_file_id, candidate.dst_file_id, candidate.relation_type.value,
+                candidate.confidence, json.dumps(candidate.evidence),
+                json.dumps(candidate.features), candidate.feature_schema_version,
+                candidate.status.value, candidate.strategy_id, self._now(),
+            )
+        )
+        candidate.candidate_id = cursor.lastrowid
+        return candidate
+
+    def get_candidate_edge(self, candidate_id: int) -> Optional[CandidateEdge]:
+        """Get a candidate edge by ID."""
+        row = self._conn.execute(
+            "SELECT * FROM candidate_edges WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        if row:
+            return self._row_to_candidate_edge(row)
+        return None
+
+    def list_candidate_edges(
+        self,
+        status: Optional[str] = None,
+        strategy_id: Optional[int] = None,
+        limit: int = 100
+    ) -> List[CandidateEdge]:
+        """List candidate edges with optional filters."""
+        sql = "SELECT * FROM candidate_edges WHERE 1=1"
+        params = []
+
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+
+        if strategy_id:
+            sql += " AND linker_strategy_id = ?"
+            params.append(strategy_id)
+
+        sql += " ORDER BY confidence DESC LIMIT ?"
+        params.append(limit)
+
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_candidate_edge(row) for row in rows]
+
+    def update_candidate_status(
+        self,
+        candidate_id: int,
+        status: str,
+        reviewed_by: str
+    ) -> bool:
+        """Update candidate edge status (accept/reject)."""
+        cursor = self._conn.execute(
+            """UPDATE candidate_edges
+               SET status = ?, reviewed_at = ?, reviewed_by = ?
+               WHERE candidate_id = ?""",
+            (status, self._now(), reviewed_by, candidate_id)
+        )
+        return cursor.rowcount > 0
+
+    def promote_candidate_to_edge(self, candidate_id: int, reviewed_by: str) -> Optional[Edge]:
+        """Promote an accepted candidate to a confirmed edge."""
+        candidate = self.get_candidate_edge(candidate_id)
+        if not candidate:
+            return None
+
+        # Update candidate status
+        self.update_candidate_status(candidate_id, "accepted", reviewed_by)
+
+        # Create confirmed edge
+        edge = Edge(
+            edge_id=0,
+            src_file_id=candidate.src_file_id,
+            dst_file_id=candidate.dst_file_id,
+            relation_type=candidate.relation_type,
+            confidence=candidate.confidence,
+            evidence=json.dumps(candidate.evidence),
+            evidence_file_id=candidate.evidence.get("evidence_file_id") if candidate.evidence else None,
+            created_by=f"candidate:{candidate_id}",
+        )
+        return self.add_edge(edge)
+
+    def count_candidate_edges(self, status: Optional[str] = None) -> int:
+        """Count candidate edges, optionally by status."""
+        if status:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as count FROM candidate_edges WHERE status = ?",
+                (status,)
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as count FROM candidate_edges"
+            ).fetchone()
+        return row["count"]
+
+    def delete_candidate_edge(self, candidate_id: int) -> bool:
+        """Delete a candidate edge."""
+        cursor = self._conn.execute(
+            "DELETE FROM candidate_edges WHERE candidate_id = ?",
+            (candidate_id,)
+        )
+        return cursor.rowcount > 0
+
+    def _row_to_candidate_edge(self, row) -> CandidateEdge:
+        return CandidateEdge(
+            candidate_id=row["candidate_id"],
+            src_file_id=row["src_file_id"],
+            dst_file_id=row["dst_file_id"],
+            relation_type=EdgeType(row["relation_type"]),
+            confidence=row["confidence"],
+            evidence=json.loads(row["evidence_json"]) if row["evidence_json"] else {},
+            features=json.loads(row["features_json"]) if row["features_json"] else {},
+            feature_schema_version=row["feature_schema_version"],
+            status=CandidateStatus(row["status"]),
+            strategy_id=row["linker_strategy_id"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            reviewed_at=datetime.fromisoformat(row["reviewed_at"]) if row["reviewed_at"] else None,
+            reviewed_by=row["reviewed_by"],
+        )
+
+    # === Artifacts ===
+
+    def add_artifact(self, artifact: Artifact) -> Artifact:
+        """Add a sub-document artifact for evidence anchoring."""
+        cursor = self._conn.execute(
+            """INSERT INTO artifacts
+               (file_id, artifact_type, locator_json, excerpt, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                artifact.file_id, artifact.artifact_type,
+                json.dumps(artifact.locator), artifact.excerpt, self._now(),
+            )
+        )
+        artifact.artifact_id = cursor.lastrowid
+        return artifact
+
+    def get_artifact(self, artifact_id: int) -> Optional[Artifact]:
+        """Get an artifact by ID."""
+        row = self._conn.execute(
+            "SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+        ).fetchone()
+        if row:
+            return self._row_to_artifact(row)
+        return None
+
+    def list_artifacts_for_file(self, file_id: int) -> List[Artifact]:
+        """List all artifacts for a file."""
+        rows = self._conn.execute(
+            "SELECT * FROM artifacts WHERE file_id = ? ORDER BY created_at",
+            (file_id,)
+        ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def delete_artifact(self, artifact_id: int) -> bool:
+        """Delete an artifact."""
+        cursor = self._conn.execute(
+            "DELETE FROM artifacts WHERE artifact_id = ?",
+            (artifact_id,)
+        )
+        return cursor.rowcount > 0
+
+    def _row_to_artifact(self, row) -> Artifact:
+        return Artifact(
+            artifact_id=row["artifact_id"],
+            file_id=row["file_id"],
+            artifact_type=row["artifact_type"],
+            locator=json.loads(row["locator_json"]),
+            excerpt=row["excerpt"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    # === Audits ===
+
+    def add_audit(self, audit: Audit) -> Audit:
+        """Add an LLM audit verdict for a candidate edge."""
+        cursor = self._conn.execute(
+            """INSERT INTO audits
+               (candidate_id, auditor_model, auditor_prompt_version, verdict,
+                confidence, rationale_excerpt, recommended_next_steps_json, audited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                audit.candidate_id, audit.auditor_model, audit.auditor_prompt_version,
+                audit.verdict, audit.confidence, audit.rationale_excerpt,
+                json.dumps(audit.recommended_next_steps), self._now(),
+            )
+        )
+        audit.audit_id = cursor.lastrowid
+        return audit
+
+    def get_audit(self, audit_id: int) -> Optional[Audit]:
+        """Get an audit by ID."""
+        row = self._conn.execute(
+            "SELECT * FROM audits WHERE audit_id = ?", (audit_id,)
+        ).fetchone()
+        if row:
+            return self._row_to_audit(row)
+        return None
+
+    def get_audits_for_candidate(self, candidate_id: int) -> List[Audit]:
+        """Get all audits for a candidate edge."""
+        rows = self._conn.execute(
+            "SELECT * FROM audits WHERE candidate_id = ? ORDER BY audited_at DESC",
+            (candidate_id,)
+        ).fetchall()
+        return [self._row_to_audit(row) for row in rows]
+
+    def _row_to_audit(self, row) -> Audit:
+        return Audit(
+            audit_id=row["audit_id"],
+            candidate_id=row["candidate_id"],
+            auditor_model=row["auditor_model"],
+            auditor_prompt_version=row["auditor_prompt_version"],
+            verdict=row["verdict"],
+            confidence=row["confidence"],
+            rationale_excerpt=row["rationale_excerpt"],
+            recommended_next_steps=json.loads(row["recommended_next_steps_json"]) if row["recommended_next_steps_json"] else [],
+            audited_at=datetime.fromisoformat(row["audited_at"]),
+        )
+
+    # === Linker Strategies ===
+
+    def add_linker_strategy(self, strategy: LinkerStrategy) -> LinkerStrategy:
+        """Add a new linker strategy."""
+        # Deactivate other strategies with same name if this one is active
+        if strategy.is_active:
+            self._conn.execute(
+                "UPDATE linker_strategies SET is_active = 0 WHERE name = ?",
+                (strategy.name,)
+            )
+
+        cursor = self._conn.execute(
+            """INSERT INTO linker_strategies
+               (name, version, description, strategy_json, src_folder_pattern,
+                dst_folder_pattern, relation_type, created_at, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                strategy.name, strategy.version, strategy.description,
+                json.dumps(strategy.strategy_config), strategy.src_folder_pattern,
+                strategy.dst_folder_pattern, strategy.relation_type.value,
+                self._now(), 1 if strategy.is_active else 0,
+            )
+        )
+        strategy.strategy_id = cursor.lastrowid
+        return strategy
+
+    def get_linker_strategy(self, strategy_id: int) -> Optional[LinkerStrategy]:
+        """Get a linker strategy by ID."""
+        row = self._conn.execute(
+            "SELECT * FROM linker_strategies WHERE strategy_id = ?", (strategy_id,)
+        ).fetchone()
+        if row:
+            return self._row_to_linker_strategy(row)
+        return None
+
+    def get_active_strategies(self) -> List[LinkerStrategy]:
+        """Get all active linker strategies."""
+        rows = self._conn.execute(
+            "SELECT * FROM linker_strategies WHERE is_active = 1 ORDER BY name"
+        ).fetchall()
+        return [self._row_to_linker_strategy(row) for row in rows]
+
+    def list_linker_strategies(self, name: Optional[str] = None) -> List[LinkerStrategy]:
+        """List all linker strategies, optionally filtered by name."""
+        if name:
+            rows = self._conn.execute(
+                "SELECT * FROM linker_strategies WHERE name = ? ORDER BY version DESC",
+                (name,)
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM linker_strategies ORDER BY name, version DESC"
+            ).fetchall()
+        return [self._row_to_linker_strategy(row) for row in rows]
+
+    def set_strategy_active(self, strategy_id: int, is_active: bool) -> bool:
+        """Set a strategy's active status. Only one version per name can be active."""
+        strategy = self.get_linker_strategy(strategy_id)
+        if not strategy:
+            return False
+
+        if is_active:
+            # Deactivate other versions of this strategy
+            self._conn.execute(
+                "UPDATE linker_strategies SET is_active = 0 WHERE name = ?",
+                (strategy.name,)
+            )
+
+        cursor = self._conn.execute(
+            "UPDATE linker_strategies SET is_active = ? WHERE strategy_id = ?",
+            (1 if is_active else 0, strategy_id)
+        )
+        return cursor.rowcount > 0
+
+    def delete_linker_strategy(self, strategy_id: int) -> bool:
+        """Delete a linker strategy."""
+        cursor = self._conn.execute(
+            "DELETE FROM linker_strategies WHERE strategy_id = ?",
+            (strategy_id,)
+        )
+        return cursor.rowcount > 0
+
+    def _row_to_linker_strategy(self, row) -> LinkerStrategy:
+        return LinkerStrategy(
+            strategy_id=row["strategy_id"],
+            name=row["name"],
+            version=row["version"],
+            description=row["description"],
+            strategy_config=json.loads(row["strategy_json"]) if row["strategy_json"] else {},
+            src_folder_pattern=row["src_folder_pattern"],
+            dst_folder_pattern=row["dst_folder_pattern"],
+            relation_type=EdgeType(row["relation_type"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            is_active=bool(row["is_active"]),
+        )
