@@ -2,7 +2,7 @@
 
 **NLP-Assisted Lab Directory Indexing and File Relationship Discovery**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18458509.svg)](https://doi.org/10.5281/zenodo.18458509)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 LabIndex builds a local SQLite index of your lab/network drives, enabling fast search, intelligent file discovery, and automatic relationship detection between data files and notes—all without ever modifying your source files.
@@ -167,7 +167,7 @@ If you use LabIndex in your research, please cite:
   title        = {LabIndex: NLP-Assisted Lab Directory Indexing},
   year         = 2026,
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.XXXXXXX},
+  doi          = {10.5281/zenodo.18458509},
   url          = {https://github.com/RyanSeanPhillips/LabIndex}
 }
 ```
